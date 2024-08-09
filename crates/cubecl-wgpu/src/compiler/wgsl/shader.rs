@@ -204,6 +204,10 @@ impl ComputeShader {
             None => format!("array<{}>", binding.item),
         };
 
+        #[cfg(all(not(target_family = "wasm"), feature = "std"))]
+        let visibility = binding.visibility.to_string();
+        // Otherwise, just bail and return None - this futures will have to be read back asynchronously.
+        #[cfg(any(target_family = "wasm", not(feature = "std")))]
         let visibility = if name == "info" {
             "read".to_string()
         } else {
