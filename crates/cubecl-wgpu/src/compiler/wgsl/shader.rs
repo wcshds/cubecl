@@ -204,12 +204,18 @@ impl ComputeShader {
             None => format!("array<{}>", binding.item),
         };
 
+        let visibility = if name == "info" {
+            "read".to_string()
+        } else {
+            binding.visibility.to_string()
+        };
+
         f.write_fmt(format_args!(
             "@group(0)
 @binding({})
 var<{}, {}> {}: {};
 \n",
-            num_entry, binding.location, binding.visibility, name, ty
+            num_entry, binding.location, visibility, name, ty
         ))?;
 
         Ok(())
@@ -228,7 +234,7 @@ impl Display for Location {
 impl Display for Visibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Visibility::Read => f.write_str("read"),
+            Visibility::Read => f.write_str("read_write"),
             Visibility::ReadWrite => f.write_str("read_write"),
         }
     }
