@@ -5,8 +5,8 @@ use core::fmt::{Debug, Display};
 use core::hash::Hash;
 
 /// Default checksum for an operation set
-#[cfg(feature = "autotune-persistent-cache")]
-pub fn compute_checksum(autotunables: &[Box<dyn AutotuneOperation>]) -> String {
+#[cfg(autotune_persistent_cache)]
+pub fn compute_checksum<Out>(autotunables: &[Box<dyn AutotuneOperation<Out>>]) -> String {
     let mut checksum = String::new();
     autotunables.iter().for_each(|op| {
         checksum += op.name();
@@ -15,29 +15,29 @@ pub fn compute_checksum(autotunables: &[Box<dyn AutotuneOperation>]) -> String {
 }
 
 /// Groups operations of the same type for autotune
-pub trait AutotuneOperationSet<K>: Send {
+pub trait AutotuneOperationSet<K, Output = ()>: Send {
     /// The key used in the tune cache
     fn key(&self) -> K;
 
     /// All candidate operations for autotuning this operation type
     /// Operations can run on toy tensors of relevant size
-    fn autotunables(&self) -> Vec<Box<dyn AutotuneOperation>>;
+    fn autotunables(&self) -> Vec<Box<dyn AutotuneOperation<Output>>>;
 
     /// Returns the operation for the given index, matching the order
     /// returned by autotunables. Operation obtained here runs on original tensors
-    fn fastest(self: Box<Self>, fastest_index: usize) -> Box<dyn AutotuneOperation>;
+    fn fastest(self: Box<Self>, fastest_index: usize) -> Box<dyn AutotuneOperation<Output>>;
 
     /// Compute a checksum that can invalidate outdated cached auto-tune results.
-    #[cfg(feature = "autotune-persistent-cache")]
+    #[cfg(autotune_persistent_cache)]
     fn compute_checksum(&self) -> String {
         compute_checksum(&self.autotunables())
     }
 }
 
 /// Contains operation to run and inputs on which to run it
-pub trait AutotuneOperation {
+pub trait AutotuneOperation<Output = ()> {
     /// Runs the operation
-    fn execute(self: Box<Self>);
+    fn execute(self: Box<Self>) -> Output;
 
     /// The name of the operation.
     fn name(&self) -> &str {
@@ -45,10 +45,10 @@ pub trait AutotuneOperation {
     }
 
     /// Clones the operation and inputs
-    fn clone(&self) -> Box<dyn AutotuneOperation>;
+    fn clone(&self) -> Box<dyn AutotuneOperation<Output>>;
 }
 
-#[cfg(feature = "autotune-persistent-cache")]
+#[cfg(autotune_persistent_cache)]
 /// Trait alias with support for persistent caching
 pub trait AutotuneKey:
     Clone
@@ -63,7 +63,8 @@ pub trait AutotuneKey:
     + Sync
 {
 }
-#[cfg(not(feature = "autotune-persistent-cache"))]
+#[cfg(not(autotune_persistent_cache))]
 /// Trait alias
 pub trait AutotuneKey: Clone + Debug + PartialEq + Eq + Hash + Display {}
+
 impl AutotuneKey for String {}

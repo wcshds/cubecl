@@ -1,4 +1,4 @@
-use super::{binary::*, unary::*, Component, Variable, WarpInstruction, WmmaInstruction};
+use super::{binary::*, unary::*, Component, Elem, Variable, WarpInstruction, WmmaInstruction};
 use std::fmt::Display;
 
 #[derive(Debug, Clone)]
@@ -30,6 +30,7 @@ pub enum Instruction {
         var: Variable,
     },
     Modulo(BinaryInstruction),
+    Remainder(BinaryInstruction),
     Add(BinaryInstruction),
     Fma {
         a: Variable,
@@ -48,6 +49,7 @@ pub enum Instruction {
         i: Variable,
         start: Variable,
         end: Variable,
+        step: Option<Variable>,
         instructions: Vec<Self>,
     },
     Loop {
@@ -112,10 +114,28 @@ pub enum Instruction {
         out: Variable,
     },
     SyncThreads,
+    ThreadFence,
     Ceil(UnaryInstruction),
     Floor(UnaryInstruction),
     Wrap(WarpInstruction),
     Wmma(WmmaInstruction),
+    Bitcast(UnaryInstruction),
+    AtomicLoad(UnaryInstruction),
+    AtomicStore(UnaryInstruction),
+    AtomicSwap(BinaryInstruction),
+    AtomicAdd(BinaryInstruction),
+    AtomicSub(BinaryInstruction),
+    AtomicMax(BinaryInstruction),
+    AtomicMin(BinaryInstruction),
+    AtomicAnd(BinaryInstruction),
+    AtomicOr(BinaryInstruction),
+    AtomicXor(BinaryInstruction),
+    AtomicCAS {
+        input: Variable,
+        cmp: Variable,
+        val: Variable,
+        out: Variable,
+    },
 }
 
 impl Display for Instruction {
@@ -163,11 +183,16 @@ impl Display for Instruction {
                 i,
                 start,
                 end,
+                step,
                 instructions,
             } => {
+                let increment = step
+                    .map(|step| format!("{i} += {step}"))
+                    .unwrap_or_else(|| format!("++{i}"));
+
                 f.write_fmt(format_args!(
                     "
-for (uint {i} = {start}; {i} < {end}; {i}++) {{
+for (uint {i} = {start}; {i} < {end}; {increment}) {{
 "
                 ))?;
                 for instruction in instructions {
@@ -238,13 +263,9 @@ for (uint {i} = {start}; {i} < {end}; {i}++) {{
                 min_value,
                 max_value,
                 out,
-            } => f.write_fmt(format_args!(
-                "
-{out} = min({input}, {max_value});
-{out} = max({out}, {min_value});
-                "
-            )),
+            } => Clamp::format(f, input, min_value, max_value, out),
             Instruction::SyncThreads => f.write_str("__syncthreads();\n"),
+            Instruction::ThreadFence => f.write_str("__threadfence();\n"),
             Instruction::Ceil(it) => Ceil::format(f, &it.input, &it.out),
             Instruction::Floor(it) => Floor::format(f, &it.input, &it.out),
             Instruction::SliceLength { input, out } => {
@@ -277,6 +298,84 @@ for (uint {i} = {start}; {i} < {end}; {i}++) {{
             Instruction::Wrap(it) => f.write_fmt(format_args!("{it}")),
             Instruction::Fma { a, b, c, out } => Fma::format(f, a, b, c, out),
             Instruction::Wmma(it) => f.write_fmt(format_args!("{it}")),
+            Instruction::Bitcast(UnaryInstruction { input, out }) => {
+                match (input.elem(), out.elem()) {
+                    (Elem::F32, Elem::I32) => {
+                        f.write_fmt(format_args!("{out} = __float_as_int({input});\n"))
+                    }
+                    (Elem::F32, Elem::U32) => {
+                        f.write_fmt(format_args!("{out} = __float_as_uint({input});\n"))
+                    }
+                    (Elem::F16, Elem::I32) => {
+                        f.write_fmt(format_args!("{out} = __half_as_short({input});\n"))
+                    }
+                    (Elem::F16, Elem::U32) => {
+                        f.write_fmt(format_args!("{out} = __half_as_ushort({input});\n"))
+                    }
+                    (Elem::BF16, Elem::I32) => {
+                        f.write_fmt(format_args!("{out} = __bfloat16_as_short({input});\n"))
+                    }
+                    (Elem::BF16, Elem::U32) => {
+                        f.write_fmt(format_args!("{out} = __bfloat16_as_ushort({input});\n"))
+                    }
+                    (Elem::I32, Elem::F32) => {
+                        f.write_fmt(format_args!("{out} = __int_as_float({input});\n"))
+                    }
+                    (Elem::I32, Elem::F16) => {
+                        f.write_fmt(format_args!("{out} = __short_as_half({input});\n"))
+                    }
+                    (Elem::I32, Elem::BF16) => {
+                        f.write_fmt(format_args!("{out} = __short_as_bfloat16({input});\n"))
+                    }
+                    (Elem::U32, Elem::F32) => {
+                        f.write_fmt(format_args!("{out} = __uint_as_float({input});\n"))
+                    }
+                    (Elem::U32, Elem::F16) => {
+                        f.write_fmt(format_args!("{out} = __ushort_as_half({input});\n"))
+                    }
+                    (Elem::U32, Elem::BF16) => {
+                        f.write_fmt(format_args!("{out} = __ushort_as_bfloat16({input});\n"))
+                    }
+                    _ => panic!("Unsupported type for bitcasting"),
+                }
+            }
+            Instruction::AtomicCAS {
+                input,
+                cmp,
+                val,
+                out,
+            } => f.write_fmt(format_args!("{out} = atomicCAS({input}, {cmp}, {val});\n")),
+            Instruction::AtomicSwap(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicExch({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicAdd(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicAdd({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicSub(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicSub({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicMax(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicMax({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicMin(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicMin({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicAnd(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicAnd({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicOr(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicOr({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicXor(BinaryInstruction { lhs, rhs, out }) => {
+                f.write_fmt(format_args!("{out} = atomicXor({lhs}, {rhs});\n"))
+            }
+            Instruction::AtomicLoad(UnaryInstruction { input, out }) => {
+                f.write_fmt(format_args!("{out} = atomicAdd({input}, 0);\n"))
+            }
+            Instruction::AtomicStore(UnaryInstruction { input, out }) => {
+                f.write_fmt(format_args!("atomicExch({out}, {input});\n"))
+            }
+            Instruction::Remainder(inst) => Remainder::format(f, &inst.lhs, &inst.rhs, &inst.out),
         }
     }
 }
@@ -294,12 +393,71 @@ impl Fma {
         let num = out.item().vectorization;
 
         for i in 0..num {
-            let ai = a.index(i, false);
-            let bi = b.index(i, false);
-            let ci = c.index(i, false);
-            let outi = out.index(i, false);
+            let ai = a.index(i);
+            let bi = b.index(i);
+            let ci = c.index(i);
+            let outi = out.index(i);
 
             f.write_fmt(format_args!("{outi} = fma({ai}, {bi}, {ci});\n"))?;
+        }
+
+        Ok(())
+    }
+}
+
+struct Clamp;
+
+impl Clamp {
+    fn format(
+        f: &mut core::fmt::Formatter<'_>,
+        input: &Variable,
+        min_value: &Variable,
+        max_value: &Variable,
+        out: &Variable,
+    ) -> core::fmt::Result {
+        let input = input.optimized();
+        let min_value = min_value.optimized();
+        let max_value = max_value.optimized();
+        let out = out.optimized();
+        let num = out.item().vectorization;
+
+        for i in 0..num {
+            let inputi = input.index(i);
+            let mini = min_value.index(i);
+            let maxi = max_value.index(i);
+            let outi = out.index(i);
+
+            f.write_fmt(format_args!(
+                "{outi} = max({mini}, min({maxi}, {inputi}));\n"
+            ))?;
+        }
+
+        Ok(())
+    }
+}
+
+struct Remainder;
+
+impl Remainder {
+    fn format(
+        f: &mut core::fmt::Formatter<'_>,
+        lhs: &Variable,
+        rhs: &Variable,
+        out: &Variable,
+    ) -> core::fmt::Result {
+        let lhs = lhs.optimized();
+        let rhs = rhs.optimized();
+        let out = out.optimized();
+        let num = out.item().vectorization;
+
+        for i in 0..num {
+            let lhsi = lhs.index(i);
+            let rhsi = rhs.index(i);
+            let outi = out.index(i);
+
+            f.write_fmt(format_args!(
+                "{outi} = {lhsi} - {rhsi} * floor({lhsi} / {rhsi});\n"
+            ))?;
         }
 
         Ok(())

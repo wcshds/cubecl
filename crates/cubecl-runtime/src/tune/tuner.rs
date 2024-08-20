@@ -37,11 +37,12 @@ impl<K: AutotuneKey> Tuner<K> {
     }
 
     /// Execute the fastest autotune operation if known, otherwise perform some benchmarks before.
-    pub fn execute_autotune<S, C>(
+    pub fn execute_autotune<S, C, Out>(
         &mut self,
-        autotune_operation_set: Box<dyn AutotuneOperationSet<K>>,
+        autotune_operation_set: Box<dyn AutotuneOperationSet<K, Out>>,
         client: &ComputeClient<S, C>,
-    ) where
+    ) -> Out
+    where
         S: ComputeServer,
         C: ComputeChannel<S>,
     {
@@ -50,14 +51,14 @@ impl<K: AutotuneKey> Tuner<K> {
             super::TuneCacheResult::Miss(set) => self.autotuning(set, client),
         };
 
-        AutotuneOperation::execute(operation);
+        AutotuneOperation::<Out>::execute(operation)
     }
 
-    fn autotuning<S, C>(
+    fn autotuning<S, C, Out>(
         &mut self,
-        autotune_operation_set: Box<dyn AutotuneOperationSet<K>>,
+        autotune_operation_set: Box<dyn AutotuneOperationSet<K, Out>>,
         client: &ComputeClient<S, C>,
-    ) -> Box<dyn AutotuneOperation>
+    ) -> Box<dyn AutotuneOperation<Out>>
     where
         S: ComputeServer,
         C: ComputeChannel<S>,
@@ -80,7 +81,7 @@ impl<K: AutotuneKey> Tuner<K> {
         log::info!("Fastest result {fastest_name}-{key}");
 
         self.tune_cache.cache_insert(key.clone(), fastest_index);
-        #[cfg(feature = "autotune-persistent-cache")]
+        #[cfg(autotune_persistent_cache)]
         {
             let checksum = autotune_operation_set.compute_checksum();
             self.tune_cache
@@ -94,9 +95,9 @@ impl<K: AutotuneKey> Tuner<K> {
         }
     }
 
-    fn run_benchmark<S, C>(
+    fn run_benchmark<S, C, Out>(
         &mut self,
-        operation: Box<dyn AutotuneOperation>,
+        operation: Box<dyn AutotuneOperation<Out>>,
         client: &ComputeClient<S, C>,
     ) -> BenchmarkDurations
     where

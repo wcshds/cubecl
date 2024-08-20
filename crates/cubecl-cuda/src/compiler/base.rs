@@ -135,6 +135,7 @@ impl CudaCompiler {
             gpu::Operation::Branch(val) => self.compile_branch(instructions, val),
             gpu::Operation::Synchronization(val) => match val {
                 gpu::Synchronization::SyncUnits => instructions.push(Instruction::SyncThreads),
+                gpu::Synchronization::SyncStorage => instructions.push(Instruction::ThreadFence),
             },
             gpu::Operation::Subcube(op) => {
                 self.wrap_size_checked = true;
@@ -276,6 +277,7 @@ impl CudaCompiler {
                 i: self.compile_variable(range_loop.i),
                 start: self.compile_variable(range_loop.start),
                 end: self.compile_variable(range_loop.end),
+                step: range_loop.step.map(|it| self.compile_variable(it)),
                 instructions: self.compile_scope(&mut range_loop.scope),
             }),
             gpu::Branch::Loop(mut op) => instructions.push(Instruction::Loop {
@@ -457,6 +459,9 @@ impl CudaCompiler {
                     gpu::Elem::Int(kind) => ConstantScalarValue::Int(1, kind),
                     gpu::Elem::UInt => ConstantScalarValue::UInt(1),
                     gpu::Elem::Bool => ConstantScalarValue::Bool(true),
+                    gpu::Elem::AtomicInt(_) | gpu::Elem::AtomicUInt => {
+                        panic!("Cannot use recip with atomics")
+                    }
                 };
 
                 instructions.push(Instruction::Div(super::BinaryInstruction {
@@ -470,12 +475,51 @@ impl CudaCompiler {
             }
             gpu::Operator::Ceil(op) => instructions.push(Instruction::Ceil(self.compile_unary(op))),
             gpu::Operator::Remainder(op) => {
-                instructions.push(Instruction::Modulo(self.compile_binary(op)))
+                instructions.push(Instruction::Remainder(self.compile_binary(op)))
             }
             gpu::Operator::Fma(op) => instructions.push(Instruction::Fma {
                 a: self.compile_variable(op.a),
                 b: self.compile_variable(op.b),
                 c: self.compile_variable(op.c),
+                out: self.compile_variable(op.out),
+            }),
+            gpu::Operator::Bitcast(op) => {
+                instructions.push(Instruction::Bitcast(self.compile_unary(op)))
+            }
+            gpu::Operator::AtomicLoad(op) => {
+                instructions.push(Instruction::AtomicLoad(self.compile_unary(op)))
+            }
+            gpu::Operator::AtomicStore(op) => {
+                instructions.push(Instruction::AtomicStore(self.compile_unary(op)))
+            }
+            gpu::Operator::AtomicSwap(op) => {
+                instructions.push(Instruction::AtomicSwap(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicAdd(op) => {
+                instructions.push(Instruction::AtomicAdd(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicSub(op) => {
+                instructions.push(Instruction::AtomicSub(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicMax(op) => {
+                instructions.push(Instruction::AtomicMax(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicMin(op) => {
+                instructions.push(Instruction::AtomicMin(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicAnd(op) => {
+                instructions.push(Instruction::AtomicAnd(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicOr(op) => {
+                instructions.push(Instruction::AtomicOr(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicXor(op) => {
+                instructions.push(Instruction::AtomicXor(self.compile_binary(op)))
+            }
+            gpu::Operator::AtomicCompareAndSwap(op) => instructions.push(Instruction::AtomicCAS {
+                input: self.compile_variable(op.input),
+                cmp: self.compile_variable(op.cmp),
+                val: self.compile_variable(op.val),
                 out: self.compile_variable(op.out),
             }),
         };
@@ -663,7 +707,12 @@ impl CudaCompiler {
                 gpu::IntKind::I32 => super::Elem::I32,
                 gpu::IntKind::I64 => panic!("i64 isn't supported yet"),
             },
+            gpu::Elem::AtomicInt(kind) => match kind {
+                gpu::IntKind::I32 => super::Elem::I32,
+                gpu::IntKind::I64 => panic!("atomic<i64> isn't supported yet"),
+            },
             gpu::Elem::UInt => super::Elem::U32,
+            gpu::Elem::AtomicUInt => super::Elem::U32,
             gpu::Elem::Bool => super::Elem::Bool,
         }
     }
